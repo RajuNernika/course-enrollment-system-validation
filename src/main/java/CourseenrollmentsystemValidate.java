@@ -5,7 +5,6 @@ import io.restassured.response.Response;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
-import jakarta.persistence.ManyToMany;
 import jakarta.validation.constraints.*;
 import org.json.JSONArray;
 import org.json.simple.JSONObject;
@@ -107,8 +106,13 @@ public class Validate {
             // === TEST EXECUTION ===
             System.out.println("Starting test execution...");
 
-            validateAddAValidCourse(serviceBaseUrl + "/api/courses", "Add a valid course");
-            validateGetAllCourses(serviceBaseUrl + "/api/courses", "Get all courses");
+            // Call annotation validation first if any
+
+            // Then call API validation methods
+            validateAddAValidCourse();
+            validateGetAllCourses();
+
+            // Then call log validation if any
 
             System.out.println("Test execution finished.");
 
@@ -127,25 +131,34 @@ public class Validate {
 
     // === VALIDATION METHODS ===
 
-    private static void validateAddAValidCourse(String url, String desc) {
+    private static void validateAddAValidCourse() {
+        String url = serviceBaseUrl + "/api/courses";
+        String desc = "Add a valid course";
         String expected = "Should create course with 201 status";
 
         try {
-            JSONObject payload = new JSONObject();
-            payload.put("name", "New Course");
-            payload.put("description", "Course Description");
+            // Build request body as JSON string
+            String payload = "{\"name\": \"Java Programming\", \"description\": \"Learn Java\"}";
 
+            // Make API call using RestAssured
             Response response = RestAssured.given()
                     .header("Content-Type", "application/json")
-                    .body(payload.toJSONString())
+                    .body(payload)
                     .post(url);
 
             if (response.getStatusCode() == 201) {
-                createdEntityId = response.jsonPath().getInt("id");
-                if (checkEntityInDb(createdEntityId, "courses")) {
-                    resultOutput.updateResult(1, desc, "Course created successfully", expected, "Success", "", MARKS10);
+                // Parse response JSON
+                JSONObject responseJson = (JSONObject) new JSONParser().parse(response.body().asString());
+
+                // Verify expected fields
+                if (responseJson.get("name").equals("Java Programming")) {
+                    // Optionally verify in database
+                    createdEntityId = ((Long) responseJson.get("id")).intValue();
+                    if (checkEntityInDb(createdEntityId, "courses")) {
+                        resultOutput.updateResult(1, desc, "Course created successfully", expected, "Success", "", MARKS10);
+                    }
                 } else {
-                    resultOutput.updateResult(0, desc, "Course not found in database", expected, "Failed", "", MARKS10);
+                    resultOutput.updateResult(0, desc, "Field validation failed", expected, "Failed", "", MARKS10);
                 }
             } else {
                 resultOutput.updateResult(0, desc, "Actual: " + response.getStatusCode(), expected, "Failed", "", MARKS10);
@@ -155,16 +168,34 @@ public class Validate {
         }
     }
 
-    private static void validateGetAllCourses(String url, String desc) {
+    private static void validateGetAllCourses() {
+        String url = serviceBaseUrl + "/api/courses";
+        String desc = "Get all courses";
         String expected = "Should return courses with 200";
 
         try {
+            // Make API call using RestAssured
             Response response = RestAssured.given()
                     .header("Content-Type", "application/json")
                     .get(url);
 
             if (response.getStatusCode() == 200) {
-                resultOutput.updateResult(1, desc, "Courses retrieved successfully", expected, "Success", "", MARKS8);
+                // Parse response JSON
+                JSONArray jsonArray = new JSONArray(response.body().asString());
+                boolean found = false;
+                for (int i = 0; i < jsonArray.length(); i++) {
+                    org.json.JSONObject obj = jsonArray.getJSONObject(i);
+                    if (obj.get("id") != null && "Java Programming".equals(obj.get("name"))) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (found) {
+                    resultOutput.updateResult(1, desc, "Courses retrieved successfully", expected, "Success", "", MARKS8);
+                } else {
+                    resultOutput.updateResult(0, desc, "Course not found in response", expected, "Failed", "", MARKS8);
+                }
             } else {
                 resultOutput.updateResult(0, desc, "Actual: " + response.getStatusCode(), expected, "Failed", "", MARKS8);
             }
@@ -178,6 +209,23 @@ public class Validate {
     private static String normalizeString(String input) {
         return input.trim().replaceAll("[-,:;._'\"']", "")
                 .replaceAll("\\s+", "").toLowerCase();
+    }
+
+    private static boolean checkFieldAnnotation(Class<?> clazz, String fieldName,
+            Class<? extends Annotation> annotationClass, String annotationName,
+            StringBuilder failureMessages) {
+        try {
+            Field field = clazz.getDeclaredField(fieldName);
+            if (!field.isAnnotationPresent(annotationClass)) {
+                failureMessages.append("- ").append(annotationName)
+                        .append(" is missing on field '").append(fieldName).append("'\n");
+                return false;
+            }
+            return true;
+        } catch (NoSuchFieldException e) {
+            failureMessages.append("- Field '").append(fieldName).append("' not found\n");
+            return false;
+        }
     }
 
     public static String buildJar(String projectPath) {
@@ -275,20 +323,27 @@ public class Validate {
         }
     }
 
-    private static boolean checkFieldAnnotation(Class<?> clazz, String fieldName,
-            Class<? extends Annotation> annotationClass, String annotationName,
-            StringBuilder failureMessages) {
+    private static void validateLogs(String logFilePath, String[] expectedLogs, String desc) {
+        String expected = "Expected log messages should be present in the console output.";
         try {
-            Field field = clazz.getDeclaredField(fieldName);
-            if (!field.isAnnotationPresent(annotationClass)) {
-                failureMessages.append("- ").append(annotationName)
-                        .append(" is missing on field '").append(fieldName).append("'\n");
-                return false;
+            String processOutput = new String(Files.readAllBytes(Paths.get(logFilePath)));
+
+            boolean allLogsFound = true;
+            StringBuilder missingLogs = new StringBuilder();
+            for (String expectedLog : expectedLogs) {
+                if (!normalizeString(processOutput).contains(normalizeString(expectedLog))) {
+                    allLogsFound = false;
+                    missingLogs.append(expectedLog).append("; ");
+                }
             }
-            return true;
-        } catch (NoSuchFieldException e) {
-            failureMessages.append("- Field '").append(fieldName).append("' not found\n");
-            return false;
+
+            if (allLogsFound) {
+                resultOutput.updateResult(1, desc, "All expected log messages were found.", expected, "Success", "", MARKS6);
+            } else {
+                resultOutput.updateResult(0, desc, "Missing logs: " + missingLogs, expected, "Failed", "", MARKS6);
+            }
+        } catch (IOException ex) {
+            resultOutput.updateResult(0, desc, "Exception while validating logs: " + ex.getMessage(), expected, "Failed", "", MARKS6);
         }
     }
 }
